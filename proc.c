@@ -86,6 +86,7 @@ allocproc(void)
   return 0;
 
 found:
+  p->is_thread = 0;
   p->state = EMBRYO;
   p->pid = nextpid++;
 
@@ -174,6 +175,86 @@ growproc(int n)
   return 0;
 }
 
+// global variable to track number of threads on shared space
+// proof of concept, only tracks one process for this demo,
+int thread_counter = 0;
+
+int
+clone(void *stack, int size)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *curproc = myproc();
+  int stack_size;
+
+  //int test = 0;
+  
+  //test = 5;
+  //cprintf("test %d\n", test);
+  
+  // sanity check for inputs and process allocation
+  if(((np = allocproc()) == 0) || stack == 0 || size == 0){
+    return -1;
+  }
+
+  // the thread should share the process state of parent
+  np->pgdir = curproc->pgdir;
+  np->sz = curproc->sz;
+  np->parent = curproc;
+  *np->tf = *curproc->tf;
+  
+  // designate this np as a thread, and increment shared count
+  np->is_thread = 1;
+
+  // also designate parent as thread to make tracking shared 
+  // resources easier
+  curproc->is_thread = 1;
+
+  thread_counter++; // inc global counter for shared mem tracking
+  
+  // clear %eax so that fork returns 0 in the child
+  np->tf->eax = 0;
+
+  // capture the size of the parent's stack
+//  stack_size = curproc->tf->ebp - curproc->tf->esp;
+  // increase size by 4 bytes
+//  stack_size += 16;
+  // calculate the new stack and base pointers for the np
+//  np->tf->ebp = (int) stack + size - 16;
+//  np->tf->esp = np->tf->ebp - stack_size + 16;
+  // copy the current stack to the new stack
+//  memmove((void *)np->tf->esp, (void*)curproc->tf->esp, stack_size);
+
+  // capture the size of the parent's stack
+  stack_size = curproc->tf->ebp - curproc->tf->esp;
+  //cprintf("stack_size: %d\n", stack_size);
+  // increase size by 4 bytes
+  stack_size += 16;
+  // calculate the new stack and base pointers for the np
+  np->tf->ebp = (int) stack + size - 16;
+  np->tf->esp = np->tf->ebp - stack_size + 16;
+  // copy the current stack to the new stack
+  memmove((void *)np->tf->esp, (void*)curproc->tf->esp, stack_size);
+
+
+
+
+
+  // the thread should share the file descriptors of parent
+  for(i = 0; i < NOFILE; i++)
+    if(curproc->ofile[i])
+      np->ofile[i] = curproc->ofile[i];
+  np->cwd = curproc->cwd;
+  
+  safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+  pid = np->pid;
+  acquire(&ptable.lock);
+  np->state = RUNNABLE;
+  release(&ptable.lock);
+  
+  return pid;
+}
+
 // Create a new process copying p as the parent.
 // Sets up stack to return as if from system call.
 // Caller must set state of returned proc to RUNNABLE.
@@ -234,14 +315,25 @@ exit(void)
   if(curproc == initproc)
     panic("init exiting");
 
-  // Close all open files.
-  for(fd = 0; fd < NOFILE; fd++){
-    if(curproc->ofile[fd]){
-      fileclose(curproc->ofile[fd]);
-      curproc->ofile[fd] = 0;
+  // don't close f.d. for shared thread unless last one!
+  if(curproc->is_thread == 1 && thread_counter != 0)
+  {
+    // if other shared threads remain, decrement	  
+    thread_counter--;
+  }
+  else   // close it
+  {
+    for(fd = 0; fd < NOFILE; fd++)
+    {
+      if(curproc->ofile[fd])
+      {
+        fileclose(curproc->ofile[fd]);
+        curproc->ofile[fd] = 0;
+      }
     }
   }
-
+  
+  
   begin_op();
   iput(curproc->cwd);
   end_op();
@@ -284,7 +376,7 @@ wait(void)
       if(p->parent != curproc)
         continue;
       havekids = 1;
-      if(p->state == ZOMBIE){
+      if(p->state == ZOMBIE && thread_counter == 0){
         // Found one.
         pid = p->pid;
         kfree(p->kstack);

@@ -89,3 +89,13 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int
+sys_clone(void)
+{
+  int size = 0;
+  int stack;
+  argint(0, &stack);
+  argint(1, &size);
+  return clone((void *)stack, size);
+}
